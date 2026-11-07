@@ -1,11 +1,12 @@
-from sympy.core import S, expand
+from sympy.core import S
 from sympy.core.numbers import Integer, Rational
 from sympy.core.function import diff
 from sympy.core.relational import Relational
 from sympy.polys.rootoftools import ComplexRootOf
 from sympy.polys import Poly, roots, real_roots, nroots
 from sympy.polys.polytools import parallel_poly_from_expr
-from sympy.polys.polytools import LT, LC, degree, subresultants, factor_list
+from sympy.polys.polytools import LT, LC, degree, factor_list
+from sympy.polys.euclidtools import dup_inner_subresultants
 from sympy.polys.domains import QQ
 from sympy.polys.polyerrors import (ComputationFailed,
     PolificationFailed, CoercionFailed, PolynomialError)
@@ -172,87 +173,14 @@ def red_set(f, mvar):
     return reds
 
 
-def subresultant_polynomials(f, g, mvar):
-    """
-    Computes the subresultant polynomials themselves. It uses the
-    subresultant PRS which is already built into SymPy.
-
-    Assume without loss of generality that the degree of g is
-    no more than the degree of f (in this function, we gracefully
-    handle the opposite case by swapping them). Then, we can compute
-    the subresultant polynomials from the subresultant PRS.
-
-    The remainder r_i is the deg(r_{i-1})-th subresultant polynomial.
-    Additionally, if deg(r_i) < deg(r_{i-1}) - 1, then the deg(r_i)
-    subresultant polynomial is r_i * LC(r_i) ^ c_i, where
-    c_i = deg(r_{i-1})-deg(r_i)-1).
-
-    Parameters
-    ==========
-
-    f: Expr or Poly
-        A polynomial
-    g: Expr or Poly
-        A polynomial
-    mvar: a generator
-        The "main variable".
-        Polynomials are treated as univariate in the mvar.
-
-
-    Returns
-    =======
-
-    List
-        The subresultants of f and g, in increasing degree.
-        The 0th element is the resultant itself.
-
-    Examples
-    ========
-
-    >>> from sympy.abc import x
-    >>> from sympy.solvers.polysys import subresultant_polynomials
-
-    >>> subresultant_polynomials(x**2, x, x)
-    [0, x]
-    """
-    # ensure deg(f) >= deg(g)
-    if degree(f, mvar) < degree(g, mvar):
-        f, g = g, f
-
-
-    prs = subresultants(f, g, mvar)
-    if len(prs) <=1:
-        return []
-
-    subres_polys = [0] * (degree(g, mvar) + 1)
-
-    for i in reversed(range(2, len(prs))):
-
-        subres_polys[ degree(prs[i-1], mvar) -1 ] = prs[i]
-
-        if degree(prs[i], mvar) < degree(prs[i-1], mvar) - 1:
-            degree_jump = degree(prs[i-1], mvar) - degree(prs[i], mvar) - 1
-            subres_polys[ degree(prs[i], mvar) ]  =\
-                prs[i] * LC(prs[i], mvar) ** degree_jump
-
-    # get last one
-    subres_polys[-1] = prs[1] * LC(g, mvar) ** (degree(f, mvar) - degree(g, mvar) - 1)
-
-    # try to expand to simplify
-    for i in range(len(subres_polys)):
-        try:
-            subres_polys[i] = expand(subres_polys[i])
-        except Exception:
-            continue
-
-    return subres_polys
-
-
 def subresultant_coefficients(f, g, mvar):
     """
-    Computes the principal subresultant coefficients (PSC). Given the
-    subresultant polynomials, in increasing degree, the ith PSC is
-    the coefficient of mvar^i in the ith subresultant.
+    Computes the principal subresultant coefficients (PSC). The
+    ith PSC is the coefficient of mvar^i in the ith subresultant.
+    The coefficients are obtained directly from SymPy's internal
+    subresultant PRS routine, without reconstructing the polynomials.
+    Inputs are swapped if necessary so the first has higher or equal
+    degree in mvar.
 
     Parameters
     ==========
@@ -270,24 +198,37 @@ def subresultant_coefficients(f, g, mvar):
     =======
 
     List
-        The principal subresultant coefficients (PSC) of f and g.
+        The principal subresultant coefficients in increasing index
+        order, including zeros at degrees skipped by the PRS.
+        Returns an empty list if either input is zero.
 
     Examples
     ========
 
     >>> from sympy.abc import x
-    >>> from sympy.solvers.polysys import subresultant_coefficients
+    >>> from cad import subresultant_coefficients
 
     >>> subresultant_coefficients(x**2, x, x)
     [0, 1]
     """
-    subres_polys = subresultant_polynomials(f, g, mvar)
+    # Other variables belong to the shared coefficient domain, so the
+    # univariate PRS routine also handles multivariate inputs.
+    (F, G), _ = parallel_poly_from_expr([f, g], mvar)
+    if F.is_zero or G.is_zero:
+        return []
+    if F.degree() < G.degree():
+        F, G = G, F
 
-    subres_coeffs = []
+    K = F.domain
+    prs, scalars = dup_inner_subresultants(
+        F.rep.to_list(), G.rep.to_list(), K
+    )
 
-    for i in range(len(subres_polys)):
-        curr_coeff = Poly(subres_polys[i], mvar).nth(i)
-        subres_coeffs.append(curr_coeff)
+    subres_coeffs = [S.Zero] * (G.degree() + 1)
+    # The first scalar is a convention entry. Each remaining scalar is
+    # the PSC indexed by its corresponding remainder's degree.
+    for remainder, scalar in zip(prs[1:], scalars[1:]):
+        subres_coeffs[len(remainder) - 1] = K.to_sympy(scalar)
 
     return subres_coeffs
 
